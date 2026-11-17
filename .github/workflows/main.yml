@@ -1,0 +1,248 @@
+name: Jazz L1 Playwright Tests
+on:
+  schedule:
+    - cron: "00 5 * * *"
+    - cron: "00 9 * * *"
+    - cron: "00 13 * * *"
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build --no-cache -t playwright-tests .
+      - name: Create results directories
+        run: |
+          mkdir -p playwright-report
+          mkdir -p test-results
+      - name: Run tests
+        id: run_tests
+        continue-on-error: true
+        run: |
+          docker run --rm \
+          -v $(pwd)/playwright-report:/app/playwright-report \
+          -v $(pwd)/test-results:/app/test-results \
+          -v /dev/ahm:/dev/ahn \
+          --name playwright-tests \
+          playwright-tests
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+      - name: Install jq # For JSON parsing
+        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Check results # Determines status + flakies
+        id: check_results
+        run: |
+          exit_code="${{ steps.run_tests.outputs.exit_code }}"
+          if [ "$exit_code" != "0" ]; then
+            echo "test_status=failed" >> $GITHUB_OUTPUT
+            echo "flakies=unknown" >> $GITHUB_OUTPUT
+          else
+            if [ -f test-results.json ]; then
+              failures=$(jq '[.suites[]?.tests[]? | select(.status == "failed")] | length' test-results.json)
+              flakies=$(jq '[.suites[]?.tests[]? | select(.status == "passed" and (.results | length) > 1 and .results[0].status == "failed")] | length' test-results.json)
+              if [ "$failures" = "0" ]; then
+                echo "test_status=success" >> $GITHUB_OUTPUT
+              else
+                echo "test_status=failed" >> $GITHUB_OUTPUT
+              fi
+              echo "flakies=$flakies" >> $GITHUB_OUTPUT
+            else
+              echo "test_status=success" >> $GITHUB_OUTPUT
+              echo "flakies=0" >> $GITHUB_OUTPUT
+            fi
+          fi
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        if: always()
+        with:
+          name: test-results
+          path: |
+            playwright-report/
+            test-results/
+            test-results.json
+          retention-days: 1 # Reduced to avoid quota hits faster
+          compression-level: 9
+      - name: Slack Notification
+        if: always()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          channel-id: "C09RBT4DM9T"
+          slack-message: |
+            :github: *Jazz L1 Playwright Tests - Complete*
+            • *Status:* ${{ steps.check_results.outputs.test_status == 'success' && ':white_check_mark: PASSED' || ':x: FAILED' }}
+            • *Run Number:* #${{ github.run_number }}
+            • *Trigger:* ${{ github.event_name }}
+            *Artifacts Download:*
+            📁 Test Results: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        env:
+          SLACK_BOT_TOKEN: "${{ secrets.SLACK_BOT_TOKEN }}"
+      - name: Get current date
+        if: always()
+        id: date
+        run: echo "date=$(date +'%m/%d/%Y')" >> $GITHUB_OUTPUT
+      - name: Email Notification
+        if: always()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          to: ${{ secrets.NOTIFICATION_EMAIL }}
+          from: "GitHub Actions <${{ secrets.EMAIL_USERNAME }}>"
+          subject: "Jazz L1 Tests ${{ steps.check_results.outputs.test_status == 'success' && '✓ Passed' || '✗ Failed' }} - Run #${{ github.run_number }}"
+          html_body: |
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            </head>
+            <body style="margin: 0; padding: 0; background-color: #f5f5f5; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
+              <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f5f5f5; padding: 40px 20px;">
+                <tr>
+                  <td align="center">
+                    <table width="600" cellpadding="0" cellspacing="0" border="0" style="background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.07);">
+                   
+                      <!-- Header -->
+                      <tr>
+                        <td style="background: ${{ steps.check_results.outputs.test_status == 'success' && 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' || 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)' }}; padding: 40px 30px; text-align: center;">
+                          <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 600; letter-spacing: -0.5px;">
+                            Jazz L1 Playwright Tests
+                          </h1>
+                          <p style="margin: 8px 0 0 0; color: rgba(255,255,255,0.9); font-size: 14px; font-weight: 400;">
+                            Automated Test Suite Results
+                          </p>
+                        </td>
+                      </tr>
+                   
+                      <!-- Status Badge -->
+                      <tr>
+                        <td style="padding: 30px 30px 20px;">
+                          <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                            <tr>
+                              <td align="center">
+                                <div style="display: inline-block; background: ${{ steps.check_results.outputs.test_status == 'success' && 'linear-gradient(135deg, #11998e 0%, #38ef7d 100%)' || 'linear-gradient(135deg, #eb3349 0%, #f45c43 100%)' }}; color: #ffffff; padding: 16px 32px; border-radius: 50px; font-size: 18px; font-weight: 600; box-shadow: 0 4px 15px ${{ steps.check_results.outputs.test_status == 'success' && 'rgba(17, 153, 142, 0.4)' || 'rgba(235, 51, 73, 0.4)' }}; text-align: center; margin: 0 auto;">
+                                  ${{ steps.check_results.outputs.test_status == 'success' && '✓ All Tests Passed' || '✗ Tests Failed' }}
+                                </div>
+                              </td>
+                            </tr>
+                          </table>
+                        </td>
+                      </tr>
+                   
+                      <!-- Test Details -->
+                      <tr>
+                        <td style="padding: 0 30px 30px;">
+                          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f8f9fa; border-radius: 8px; overflow: hidden;">
+                            <tr>
+                              <td style="padding: 20px;">
+                                <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                  <tr>
+                                    <td style="padding: 12px 0; border-bottom: 1px solid #e9ecef;">
+                                      <span style="color: #6c757d; font-size: 13px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;">Status</span>
+                                    </td>
+                                    <td align="center" style="padding: 12px 0; border-bottom: 1px solid #e9ecef;">
+                                      <span style="color: ${{ steps.check_results.outputs.test_status == 'success' && '#28a745' || '#dc3545' }}; font-size: 14px; font-weight: 600;">
+                                        ${{ steps.check_results.outputs.test_status == 'success' && '✓ PASSED' || '✗ FAILED' }}
+                                      </span>
+                                    </td>
+                                  </tr>
+                                  
+                                  <tr>
+                                    <td style="padding: 12px 0; border-bottom: 1px solid #e9ecef;">
+                                      <span style="color: #6c757d; font-size: 13px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;">Run Number</span>
+                                    </td>
+                                    <td align="right" style="padding: 12px 0; border-bottom: 1px solid #e9ecef;">
+                                      <span style="color: #212529; font-size: 14px; font-weight: 500;">#${{ github.run_number }}</span>
+                                    </td>
+                                  </tr>
+                                  <tr>
+                                    <td style="padding: 12px 0; border-bottom: 1px solid #e9ecef;">
+                                      <span style="color: #6c757d; font-size: 13px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;">Date</span>
+                                    </td>
+                                    <td align="right" style="padding: 12px 0; border-bottom: 1px solid #e9ecef;">
+                                      <span style="color: #212529; font-size: 14px; font-weight: 500;">${{ steps.date.outputs.date }}</span>
+                                    </td>
+                                  </tr>
+                                  <tr>
+                                    <td style="padding: 12px 0; border-bottom: 1px solid #e9ecef;">
+                                      <span style="color: #6c757d; font-size: 13px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;">Trigger</span>
+                                    </td>
+                                    <td align="right" style="padding: 12px 0; border-bottom: 1px solid #e9ecef;">
+                                      <span style="color: #212529; font-size: 14px; font-weight: 500;">${{ github.event_name }}</span>
+                                    </td>
+                                  </tr>
+                                  <tr>
+                                    <td style="padding: 12px 0;">
+                                      <span style="color: #6c757d; font-size: 13px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;">Repository</span>
+                                    </td>
+                                    <td align="right" style="padding: 12px 0;">
+                                      <span style="color: #212529; font-size: 14px; font-weight: 500;">${{ github.repository }}</span>
+                                    </td>
+                                  </tr>
+                                </table>
+                              </td>
+                            </tr>
+                          </table>
+                        </td>
+                      </tr>
+                   
+                      <!-- Run Summary -->
+                      <tr>
+                        <td style="padding: 0 30px 20px;">
+                          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background: linear-gradient(135deg, #667eea10 0%, #764ba210 100%); border-radius: 8px; padding: 20px;">
+                            <tr>
+                              <td align="center">
+                                <h3 style="margin: 0 0 10px 0; color: #495057; font-size: 16px; font-weight: 600;">📊 Test Summary</h3>
+                                <p style="margin: 0; color: #6c757d; font-size: 14px; line-height: 1.5;">
+                                  Automated test execution completed ${{ steps.check_results.outputs.test_status == 'success' && 'successfully' || 'with failures' }}${{ steps.check_results.outputs.test_status == 'success' && steps.check_results.outputs.flakies != '0' && ' (with flakies)' || '' }}<br>
+                                  Detailed reports and artifacts available for download
+                                </p>
+                              </td>
+                            </tr>
+                          </table>
+                        </td>
+                      </tr>
+                   
+                      <!-- CTA Button -->
+                      <tr>
+                        <td style="padding: 0 30px 30px;" align="center">
+                          <table cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 15px;">
+                            <tr>
+                              <td align="center" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 10px; box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4); transition: all 0.3s ease;">
+                                <a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                                   style="display: block; padding: 18px 45px; color: #ffffff; text-decoration: none; font-size: 16px; font-weight: 700; letter-spacing: 0.3px;">
+                                  📥 View Detailed Results & Artifacts
+                                </a>
+                              </td>
+                            </tr>
+                          </table>
+                          <p style="margin: 8px 0 0 0; color: #6c757d; font-size: 13px; line-height: 1.4;">
+                            ⏳ Artifacts will be automatically deleted after 1 day<br>
+                          </p>
+                        </td>
+                      </tr>
+                   
+                      <!-- Footer -->
+                      <tr>
+                        <td style="padding: 25px 30px; background-color: #f8f9fa; border-top: 1px solid #e9ecef;">
+                          <p style="margin: 0; text-align: center; color: #6c757d; font-size: 12px; line-height: 1.6;">
+                            Automated notification from <strong>GitHub Actions</strong><br>
+                            Jazz L1 Test Suite · Powered by Playwright
+                          </p>
+                        </td>
+                      </tr>
+                   
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </body>
+            </html>
+      - name: Fail workflow if tests failed
+        if: always() && steps.check_results.outputs.test_status == 'failed'
+        run: exit 1

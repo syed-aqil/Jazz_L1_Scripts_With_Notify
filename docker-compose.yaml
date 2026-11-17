@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  playwright-tests:
+    build: .
+    container_name: L1-playwright-tests
+    volumes:
+      - ./playwright-report:/app/playwright-report
+      - ./test-results:/app/test-results
+    environment:
+      - CI=true
+      - NODE_ENV=test
+    # Run tests and keep container running for report viewing
+    command: >
+      sh -c "
+        npx playwright test ||
+        (echo 'Tests completed with status: $?' && npx playwright show-report --host 0.0.0.0 --port 9323)
+      "
+    ports:
+      - "9323:9323"  # For viewing HTML report
+
+  # Optional: Separate service just for running tests
+  test-runner:
+    build: .
+    container_name: L1-test-runner
+    profiles: ["test-run"]
+    environment:
+      - CI=true
+      - NODE_ENV=test
+    command: npx playwright test
+
+  # Optional: Service for viewing reports
+  report-viewer:
+    build: .
+    container_name: l1-report-viewer
+    profiles: ["report"]
+    volumes:
+      - ./playwright-report:/app/playwright-report
+    ports:
+      - "9323:9323"
+    command: npx playwright show-report --host 0.0.0.0 --port 9323
